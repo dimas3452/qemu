@@ -1059,7 +1059,7 @@ static void msp430_translate_jump(MSP430CpuState *env, DisasmContext *ctx)
      * This involves checking the status values and jumping accordingly. */
     if (ctx->fmt.jump.cond != ALWAYS)
     {
-        int label = gen_new_label();
+        TCGLabel *label = gen_new_label();
         TCGv temp, temp2;
         temp = tcg_temp_local_new();
         switch(ctx->fmt.jump.cond)
@@ -1224,7 +1224,7 @@ static void msp430_generate_tcg_code(MSP430CpuState *env, TranslationBlock *tb, 
 {
     DisasmContext ctx;
     //CPUState *cs = CPU(msp430_env_get_cpu(env));
-    uint32_t instrCount = 0;
+    int32_t instrCount = 0;
     target_ulong pc_start, pc_idx;
     target_ulong blockSize = 0;
 
@@ -1235,7 +1235,7 @@ static void msp430_generate_tcg_code(MSP430CpuState *env, TranslationBlock *tb, 
 
     /* Signal to the QEMU TCG engine that this translation engine will start creating 
      * instruction for this translation block. */
-    gen_tb_start();
+    gen_tb_start(tb);
     
     /* Loop through, translationing instructions, until we hit a control flow change 
      * within our translation block. */
@@ -1265,12 +1265,12 @@ static void msp430_generate_tcg_code(MSP430CpuState *env, TranslationBlock *tb, 
     /* At this point, the translation engine has finished creating TCG instructions.
      * this will signal to QEMU TCG engine to close buffers and whatever else it needs
      * to do. */
-    gen_tb_end(tb, 1);
+    gen_tb_end(tb, instrCount);
     
     /* Set the size of the tb and the number of instructions that are contained
      * within this translation block. This allows us to define what was created
      * within the translation block. */
-    *tcg_ctx.gen_opc_ptr = INDEX_op_end;
+    //*tcg_ctx.gen_opc_ptr = INDEX_op_end;
     tb->size = blockSize;
     tb->icount = instrCount;
     return;
