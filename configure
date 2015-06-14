@@ -5248,6 +5248,10 @@ case "$target_name" in
   ;;
   moxie)
   ;;
+  msp430)
+    TARGET_ARCH=msp430
+    TARGET_BASE_ARCH=msp430
+  ;;
   or32)
     TARGET_ARCH=openrisc
     TARGET_BASE_ARCH=openrisc
@@ -5451,6 +5455,10 @@ for i in $ARCH $TARGET_BASE_ARCH ; do
   moxie*)
     echo "CONFIG_MOXIE_DIS=y"  >> $config_target_mak
     echo "CONFIG_MOXIE_DIS=y"  >> config-all-disas.mak
+  ;;
+  msp430*)
+    echo "CONFIG_MSP430_DIS=y"  >> $config_target_mak
+    echo "CONFIG_MSP430_DIS=y"  >> config-all-disas.mak
   ;;
   or32)
     echo "CONFIG_OPENRISC_DIS=y"  >> $config_target_mak
