@@ -118,7 +118,7 @@ static void msp430_init(Object *obj)
     /* Fetch the proper states and initialize the CPU and the parent
      * CPU object to be initialized. */
     cpu_state->env_ptr = &msp_state->state;
-    cpu_exec_init(&msp_state->state);
+    cpu_exec_init(cpu_state, &error_abort);
 
     /* Check to see if the TCG is enabled within QEMU and if we have not
      * initialized the Translator engine. */
