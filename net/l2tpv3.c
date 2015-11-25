@@ -28,7 +28,6 @@
 #include "config-host.h"
 #include "net/net.h"
 #include "clients.h"
-#include "monitor/monitor.h"
 #include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "qemu/option.h"
@@ -546,8 +545,8 @@ int net_init_l2tpv3(const NetClientOptions *opts,
     s->queue_tail = 0;
     s->header_mismatch = false;
 
-    assert(opts->kind == NET_CLIENT_OPTIONS_KIND_L2TPV3);
-    l2tpv3 = opts->l2tpv3;
+    assert(opts->type == NET_CLIENT_OPTIONS_KIND_L2TPV3);
+    l2tpv3 = opts->u.l2tpv3;
 
     if (l2tpv3->has_ipv6 && l2tpv3->ipv6) {
         s->ipv6 = l2tpv3->ipv6;

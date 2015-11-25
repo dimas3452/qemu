@@ -44,7 +44,6 @@ typedef enum {
     QTYPE_QLIST,
     QTYPE_QFLOAT,
     QTYPE_QBOOL,
-    QTYPE_QERROR,
     QTYPE_MAX,
 } qtype_code;
 
@@ -59,10 +58,6 @@ typedef struct QObject {
     const QType *type;
     size_t refcnt;
 } QObject;
-
-/* Objects definitions must include this */
-#define QObject_HEAD  \
-    QObject base
 
 /* Get the 'base' part of an object */
 #define QOBJECT(obj) (&(obj)->base)
@@ -95,6 +90,7 @@ static inline void qobject_incref(QObject *obj)
  */
 static inline void qobject_decref(QObject *obj)
 {
+    assert(!obj || obj->refcnt);
     if (obj && --obj->refcnt == 0) {
         assert(obj->type != NULL);
         assert(obj->type->destroy != NULL);
