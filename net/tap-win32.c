@@ -688,6 +688,16 @@ void tap_fd_set_vnet_hdr_len(int fd, int len)
 {
 }
 
+int tap_fd_set_vnet_le(int fd, int is_le)
+{
+    return -EINVAL;
+}
+
+int tap_fd_set_vnet_be(int fd, int is_be)
+{
+    return -EINVAL;
+}
+
 static void tap_using_vnet_hdr(NetClientState *nc, bool using_vnet_hdr)
 {
 }
@@ -757,8 +767,8 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
     /* FIXME error_setg(errp, ...) on failure */
     const NetdevTapOptions *tap;
 
-    assert(opts->kind == NET_CLIENT_OPTIONS_KIND_TAP);
-    tap = opts->tap;
+    assert(opts->type == NET_CLIENT_OPTIONS_KIND_TAP);
+    tap = opts->u.tap;
 
     if (!tap->has_ifname) {
         error_report("tap: no interface name");

@@ -1325,23 +1325,11 @@ void gen_intermediate_code(MSP430CpuState *env, struct TranslationBlock *tb)
  * @details [long description]
  * 
  * @param env [description]
- * @param TranslationBlock [description]
- */
-void gen_intermediate_code_pc(MSP430CpuState *env, struct TranslationBlock *tb) 
-{  
-    msp430_error(true, "Need to handle this correctly...\n");
-    msp430_generate_tcg_code(env, tb, false);
-}
-
-/**
- * @brief [brief description]
- * @details [long description]
- * 
- * @param env [description]
  * @param tb [description]
  * @param pc_pos [description]
  */
-void restore_state_to_opc(MSP430CpuState *env, TranslationBlock *tb, int pc_pos)
+void restore_state_to_opc(MSP430CpuState *env, TranslationBlock *tb,
+                          target_ulong *data)
 {
-    env->regs[MSP430_PC_REGISTER] = tcg_ctx.gen_opc_pc[pc_pos];
+    env->regs[MSP430_PC_REGISTER] = data[0];
 }

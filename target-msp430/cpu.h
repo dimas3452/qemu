@@ -189,7 +189,7 @@ typedef struct {
 // REQUIRED: Stubbed Functions. This appears to support more the TCG side of 
 // QEMU that we don't support currently.
 MSP430Cpu *cpu_msp430_init(const char *cpu_model);
-int cpu_msp430_exec(MSP430CpuState *s);
+int cpu_msp430_exec(CPUState *cpu);
 void msp430_translate_init(void);
 
 #define cpu_exec cpu_msp430_exec
@@ -222,8 +222,9 @@ static inline MSP430Cpu *msp430_env_get_cpu(MSP430CpuState *state)
     return container_of(state, MSP430Cpu, state);
 }
 
-static inline int cpu_mmu_index(MSP430CpuState *env) { return 0; }
-
+static inline int cpu_mmu_index(MSP430CpuState *env, bool ifetch) {
+    return 0;
+}
 
 void msp430_cpu_dump_state(CPUState *cs, 
                           FILE *f, 

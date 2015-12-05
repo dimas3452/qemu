@@ -84,6 +84,12 @@ static void acpi_dsdt_add_uart(Aml *scope, const MemMapEntry *uart_memmap,
                aml_interrupt(AML_CONSUMER, AML_LEVEL, AML_ACTIVE_HIGH,
                              AML_EXCLUSIVE, uart_irq));
     aml_append(dev, aml_name_decl("_CRS", crs));
+
+    /* The _ADR entry is used to link this device to the UART described
+     * in the SPCR table, i.e. SPCR.base_address.address == _ADR.
+     */
+    aml_append(dev, aml_name_decl("_ADR", aml_int(uart_memmap->base)));
+
     aml_append(scope, dev);
 }
 
@@ -108,7 +114,7 @@ static void acpi_dsdt_add_flash(Aml *scope, const MemMapEntry *flash_memmap)
 {
     Aml *dev, *crs;
     hwaddr base = flash_memmap->base;
-    hwaddr size = flash_memmap->size;
+    hwaddr size = flash_memmap->size / 2;
 
     dev = aml_device("FLS0");
     aml_append(dev, aml_name_decl("_HID", aml_string("LNRO0015")));
@@ -153,7 +159,8 @@ static void acpi_dsdt_add_virtio(Aml *scope,
     }
 }
 
-static void acpi_dsdt_add_pci(Aml *scope, const MemMapEntry *memmap, int irq)
+static void acpi_dsdt_add_pci(Aml *scope, const MemMapEntry *memmap, int irq,
+                              bool use_highmem)
 {
     Aml *method, *crs, *ifctx, *UUID, *ifctx1, *elsectx, *buf;
     int i, bus_no;
@@ -173,6 +180,7 @@ static void acpi_dsdt_add_pci(Aml *scope, const MemMapEntry *memmap, int irq)
     aml_append(dev, aml_name_decl("_ADR", aml_int(0)));
     aml_append(dev, aml_name_decl("_UID", aml_string("PCI0")));
     aml_append(dev, aml_name_decl("_STR", aml_unicode("PCIe 0 Device")));
+    aml_append(dev, aml_name_decl("_CCA", aml_int(1)));
 
     /* Declare the PCI Routing Table. */
     Aml *rt_pkg = aml_package(nr_pcie_buses * PCI_NUM_PINS);
@@ -227,6 +235,17 @@ static void acpi_dsdt_add_pci(Aml *scope, const MemMapEntry *memmap, int irq)
         aml_dword_io(AML_MIN_FIXED, AML_MAX_FIXED, AML_POS_DECODE,
                      AML_ENTIRE_RANGE, 0x0000, 0x0000, size_pio - 1, base_pio,
                      size_pio));
+
+    if (use_highmem) {
+        hwaddr base_mmio_high = memmap[VIRT_PCIE_MMIO_HIGH].base;
+        hwaddr size_mmio_high = memmap[VIRT_PCIE_MMIO_HIGH].size;
+
+        aml_append(rbuf,
+            aml_qword_memory(AML_POS_DECODE, AML_MIN_FIXED, AML_MAX_FIXED,
+                             AML_NON_CACHEABLE, AML_READ_WRITE, 0x0000,
+                             base_mmio_high, base_mmio_high, 0x0000,
+                             size_mmio_high));
+    }
 
     aml_append(method, aml_name_decl("RBUF", rbuf));
     aml_append(method, aml_return(rbuf));
@@ -334,6 +353,38 @@ build_rsdp(GArray *rsdp_table, GArray *linker, unsigned rsdt)
 }
 
 static void
+build_spcr(GArray *table_data, GArray *linker, VirtGuestInfo *guest_info)
+{
+    AcpiSerialPortConsoleRedirection *spcr;
+    const MemMapEntry *uart_memmap = &guest_info->memmap[VIRT_UART];
+    int irq = guest_info->irqmap[VIRT_UART] + ARM_SPI_BASE;
+
+    spcr = acpi_data_push(table_data, sizeof(*spcr));
+
+    spcr->interface_type = 0x3;    /* ARM PL011 UART */
+
+    spcr->base_address.space_id = AML_SYSTEM_MEMORY;
+    spcr->base_address.bit_width = 8;
+    spcr->base_address.bit_offset = 0;
+    spcr->base_address.access_width = 1;
+    spcr->base_address.address = cpu_to_le64(uart_memmap->base);
+
+    spcr->interrupt_types = (1 << 3); /* Bit[3] ARMH GIC interrupt */
+    spcr->gsi = cpu_to_le32(irq);  /* Global System Interrupt */
+
+    spcr->baud = 3;                /* Baud Rate: 3 = 9600 */
+    spcr->parity = 0;              /* No Parity */
+    spcr->stopbits = 1;            /* 1 Stop bit */
+    spcr->flowctrl = (1 << 1);     /* Bit[1] = RTS/CTS hardware flow control */
+    spcr->term_type = 0;           /* Terminal Type: 0 = VT100 */
+
+    spcr->pci_device_id = 0xffff;  /* PCI Device ID: not a PCI device */
+    spcr->pci_vendor_id = 0xffff;  /* PCI Vendor ID: not a PCI device */
+
+    build_header(linker, table_data, (void *)spcr, "SPCR", sizeof(*spcr), 2);
+}
+
+static void
 build_mcfg(GArray *table_data, GArray *linker, VirtGuestInfo *guest_info)
 {
     AcpiTableMcfg *mcfg;
@@ -349,7 +400,7 @@ build_mcfg(GArray *table_data, GArray *linker, VirtGuestInfo *guest_info)
     mcfg->allocation[0].end_bus_number = (memmap[VIRT_PCIE_ECAM].size
                                           / PCIE_MMCFG_SIZE_MIN) - 1;
 
-    build_header(linker, table_data, (void *)mcfg, "MCFG", len, 5);
+    build_header(linker, table_data, (void *)mcfg, "MCFG", len, 1);
 }
 
 /* GTDT */
@@ -375,7 +426,7 @@ build_gtdt(GArray *table_data, GArray *linker)
 
     build_header(linker, table_data,
                  (void *)(table_data->data + gtdt_start), "GTDT",
-                 table_data->len - gtdt_start, 5);
+                 table_data->len - gtdt_start, 2);
 }
 
 /* MADT */
@@ -385,34 +436,59 @@ build_madt(GArray *table_data, GArray *linker, VirtGuestInfo *guest_info,
 {
     int madt_start = table_data->len;
     const MemMapEntry *memmap = guest_info->memmap;
+    const int *irqmap = guest_info->irqmap;
     AcpiMultipleApicTable *madt;
     AcpiMadtGenericDistributor *gicd;
+    AcpiMadtGenericMsiFrame *gic_msi;
     int i;
 
     madt = acpi_data_push(table_data, sizeof *madt);
-
-    for (i = 0; i < guest_info->smp_cpus; i++) {
-        AcpiMadtGenericInterrupt *gicc = acpi_data_push(table_data,
-                                                     sizeof *gicc);
-        gicc->type = ACPI_APIC_GENERIC_INTERRUPT;
-        gicc->length = sizeof(*gicc);
-        gicc->base_address = memmap[VIRT_GIC_CPU].base;
-        gicc->cpu_interface_number = i;
-        gicc->arm_mpidr = i;
-        gicc->uid = i;
-        if (test_bit(i, cpuinfo->found_cpus)) {
-            gicc->flags = cpu_to_le32(ACPI_GICC_ENABLED);
-        }
-    }
 
     gicd = acpi_data_push(table_data, sizeof *gicd);
     gicd->type = ACPI_APIC_GENERIC_DISTRIBUTOR;
     gicd->length = sizeof(*gicd);
     gicd->base_address = memmap[VIRT_GIC_DIST].base;
 
+    for (i = 0; i < guest_info->smp_cpus; i++) {
+        AcpiMadtGenericInterrupt *gicc = acpi_data_push(table_data,
+                                                     sizeof *gicc);
+        ARMCPU *armcpu = ARM_CPU(qemu_get_cpu(i));
+
+        gicc->type = ACPI_APIC_GENERIC_INTERRUPT;
+        gicc->length = sizeof(*gicc);
+        if (guest_info->gic_version == 2) {
+            gicc->base_address = memmap[VIRT_GIC_CPU].base;
+        }
+        gicc->cpu_interface_number = i;
+        gicc->arm_mpidr = armcpu->mp_affinity;
+        gicc->uid = i;
+        if (test_bit(i, cpuinfo->found_cpus)) {
+            gicc->flags = cpu_to_le32(ACPI_GICC_ENABLED);
+        }
+    }
+
+    if (guest_info->gic_version == 3) {
+        AcpiMadtGenericRedistributor *gicr = acpi_data_push(table_data,
+                                                         sizeof *gicr);
+
+        gicr->type = ACPI_APIC_GENERIC_REDISTRIBUTOR;
+        gicr->length = sizeof(*gicr);
+        gicr->base_address = cpu_to_le64(memmap[VIRT_GIC_REDIST].base);
+        gicr->range_length = cpu_to_le32(memmap[VIRT_GIC_REDIST].size);
+    } else {
+        gic_msi = acpi_data_push(table_data, sizeof *gic_msi);
+        gic_msi->type = ACPI_APIC_GENERIC_MSI_FRAME;
+        gic_msi->length = sizeof(*gic_msi);
+        gic_msi->gic_msi_frame_id = 0;
+        gic_msi->base_address = cpu_to_le64(memmap[VIRT_GIC_V2M].base);
+        gic_msi->flags = cpu_to_le32(1);
+        gic_msi->spi_count = cpu_to_le16(NUM_GICV2M_SPIS);
+        gic_msi->spi_base = cpu_to_le16(irqmap[VIRT_GIC_V2M] + ARM_SPI_BASE);
+    }
+
     build_header(linker, table_data,
                  (void *)(table_data->data + madt_start), "APIC",
-                 table_data->len - madt_start, 5);
+                 table_data->len - madt_start, 3);
 }
 
 /* FADT */
@@ -461,7 +537,8 @@ build_dsdt(GArray *table_data, GArray *linker, VirtGuestInfo *guest_info)
     acpi_dsdt_add_flash(scope, &memmap[VIRT_FLASH]);
     acpi_dsdt_add_virtio(scope, &memmap[VIRT_MMIO],
                     (irqmap[VIRT_MMIO] + ARM_SPI_BASE), NUM_VIRTIO_TRANSPORTS);
-    acpi_dsdt_add_pci(scope, memmap, (irqmap[VIRT_PCIE] + ARM_SPI_BASE));
+    acpi_dsdt_add_pci(scope, memmap, (irqmap[VIRT_PCIE] + ARM_SPI_BASE),
+                      guest_info->use_highmem);
 
     aml_append(dsdt, scope);
 
@@ -469,7 +546,7 @@ build_dsdt(GArray *table_data, GArray *linker, VirtGuestInfo *guest_info)
     g_array_append_vals(table_data, dsdt->buf->data, dsdt->buf->len);
     build_header(linker, table_data,
         (void *)(table_data->data + table_data->len - dsdt->buf->len),
-        "DSDT", dsdt->buf->len, 5);
+        "DSDT", dsdt->buf->len, 2);
     free_aml_allocator();
 }
 
@@ -507,6 +584,7 @@ void virt_acpi_build(VirtGuestInfo *guest_info, AcpiBuildTables *tables)
      * FADT
      * GTDT
      * MADT
+     * MCFG
      * DSDT
      */
 
@@ -514,7 +592,7 @@ void virt_acpi_build(VirtGuestInfo *guest_info, AcpiBuildTables *tables)
     dsdt = tables_blob->len;
     build_dsdt(tables_blob, tables->linker, guest_info);
 
-    /* FADT MADT GTDT pointed to by RSDT */
+    /* FADT MADT GTDT MCFG SPCR pointed to by RSDT */
     acpi_add_table(table_offsets, tables_blob);
     build_fadt(tables_blob, tables->linker, dsdt);
 
@@ -526,6 +604,9 @@ void virt_acpi_build(VirtGuestInfo *guest_info, AcpiBuildTables *tables)
 
     acpi_add_table(table_offsets, tables_blob);
     build_mcfg(tables_blob, tables->linker, guest_info);
+
+    acpi_add_table(table_offsets, tables_blob);
+    build_spcr(tables_blob, tables->linker, guest_info);
 
     /* RSDT is pointed to by RSDP */
     rsdt = tables_blob->len;

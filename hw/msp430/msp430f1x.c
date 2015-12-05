@@ -91,15 +91,11 @@ static void msp430f1x_init(MachineState *args)
     return;
 }
 
-QEMUMachine msp430f1x_info = {
-    .name = "msp430f1x",
-    .desc = "MSP430F1x Family Suite",
-    .init = msp430f1x_init,
-};
-
-static void msp430f1x_register(void)
+static void msp430f1x_machine_init(MachineClass *mc)
 {
-    qemu_register_machine(&msp430f1x_info);
+    mc->desc = "MSP430F1x Family Suite";
+    mc->init = msp430f1x_init;
+    mc->is_default = 1;
 }
 
-machine_init(msp430f1x_register)
+DEFINE_MACHINE("msp430f1x", msp430f1x_machine_init)
