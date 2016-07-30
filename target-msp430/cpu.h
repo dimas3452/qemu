@@ -1,8 +1,7 @@
 #ifndef _CPU_MSP430_H
 #define _CPU_MSP430_H
 
-
-#include "config.h"
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qom/cpu.h"
 
@@ -210,7 +209,7 @@ void msp430_translate_init(void);
 static inline void cpu_get_tb_cpu_state(MSP430CpuState *state, 
                                         target_ulong *pc,
                                         target_ulong *cs_base, 
-                                        int *flags)
+                                        uint32_t *flags)
 {
     *pc = (0xFFFF) & state->PC_REG;
     *cs_base = 0;

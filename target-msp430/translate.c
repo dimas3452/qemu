@@ -1297,7 +1297,7 @@ void msp430_translate_init(void)
     /* Initialize the TCG variables that will be used when generating new TCG instructions
      * for the MSP430. This will help us generate instructions quicker and faster. */
     for(i=0; i<MSP430_NUM_REGISTERS; i++)
-        tcg_regs[i] = tcg_global_mem_new_i32(TCG_AREG0,
+        tcg_regs[i] = tcg_global_mem_new_i32(cpu_env,
                                              offsetof(MSP430CpuState, regs[i]),
                                              reg_names[i]);
 }

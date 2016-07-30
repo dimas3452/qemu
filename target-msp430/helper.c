@@ -1,3 +1,8 @@
+#include "qemu/osdep.h"
+#include "cpu.h"
+#include "exec/log.h"
+#include "exec/cpu-defs.h"
+#include "exec/cpu-common.h"
 #include "exec/exec-all.h"
 
 

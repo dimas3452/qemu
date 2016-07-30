@@ -1,9 +1,12 @@
+#include "qemu/osdep.h"
+#include "cpu.h"
 #include "hw/hw.h"
 #include "hw/boards.h"
 #include "hw/sysbus.h"
 #include "sysemu/sysemu.h"
 #include "exec/address-spaces.h"
 #include "hw/loader.h"
+#include "qemu/log.h"
 
 #define MSP430_FLASH_SIZE (0x400)     // 1kB Flash
 #define MSP430_FLASH_BASE (0xFC00)    // Base Address

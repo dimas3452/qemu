@@ -4,6 +4,8 @@
 #include "cpu.h"
 #include "qemu-common.h"
 #include "exec/cpu_ldst.h"
+#include "exec/log.h"
+#include "qapi/error.h"
 #include "hw/loader.h"
 
 #define MSP430_NUM_CPUS              (sizeof(MspCpus)/sizeof(MSP430CpuInfo))

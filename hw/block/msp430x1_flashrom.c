@@ -1,6 +1,8 @@
+#include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
+#include "qemu/log.h"
 
 #define TYPE_MSP430X1_FLASHROM "msp430x1_flashrom"
 #define MSP430X1_FLASHROM(obj) OBJECT_CHECK(MSP430FlashRomState, (obj), TYPE_MSP430X1_FLASHROM)

@@ -1,3 +1,4 @@
+#include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
