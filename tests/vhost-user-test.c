@@ -8,18 +8,17 @@
  *
  */
 
-#include <glib.h>
+#include "qemu/osdep.h"
 
 #include "libqtest.h"
 #include "qemu/option.h"
 #include "qemu/range.h"
+#include "qemu/sockets.h"
 #include "sysemu/char.h"
 #include "sysemu/sysemu.h"
 
 #include <linux/vhost.h>
-#include <sys/mman.h>
 #include <sys/vfs.h>
-#include <qemu/sockets.h>
 
 /* GLIB version compatibility flags */
 #if !GLIB_CHECK_VERSION(2, 26, 0)
@@ -33,13 +32,12 @@
 #define QEMU_CMD_ACCEL  " -machine accel=tcg"
 #define QEMU_CMD_MEM    " -m %d -object memory-backend-file,id=mem,size=%dM,"\
                         "mem-path=%s,share=on -numa node,memdev=mem"
-#define QEMU_CMD_CHR    " -chardev socket,id=%s,path=%s"
+#define QEMU_CMD_CHR    " -chardev socket,id=%s,path=%s%s"
 #define QEMU_CMD_NETDEV " -netdev vhost-user,id=net0,chardev=%s,vhostforce"
-#define QEMU_CMD_NET    " -device virtio-net-pci,netdev=net0 "
-#define QEMU_CMD_ROM    " -option-rom ../pc-bios/pxe-virtio.rom"
+#define QEMU_CMD_NET    " -device virtio-net-pci,netdev=net0,romfile=./pc-bios/pxe-virtio.rom"
 
 #define QEMU_CMD        QEMU_CMD_ACCEL QEMU_CMD_MEM QEMU_CMD_CHR \
-                        QEMU_CMD_NETDEV QEMU_CMD_NET QEMU_CMD_ROM
+                        QEMU_CMD_NETDEV QEMU_CMD_NET
 
 #define HUGETLBFS_MAGIC       0x958458f6
 
@@ -123,28 +121,17 @@ static VhostUserMsg m __attribute__ ((unused));
 
 typedef struct TestServer {
     gchar *socket_path;
+    gchar *mig_path;
     gchar *chr_name;
     CharDriverState *chr;
     int fds_num;
     int fds[VHOST_MEMORY_MAX_NREGIONS];
     VhostUserMemory memory;
-    GMutex data_mutex;
-    GCond data_cond;
+    CompatGMutex data_mutex;
+    CompatGCond data_cond;
     int log_fd;
+    uint64_t rings;
 } TestServer;
-
-#if !GLIB_CHECK_VERSION(2, 32, 0)
-static gboolean g_cond_wait_until(CompatGCond cond, CompatGMutex mutex,
-                                  gint64 end_time)
-{
-    gboolean ret = FALSE;
-    end_time -= g_get_monotonic_time();
-    GTimeVal time = { end_time / G_TIME_SPAN_SECOND,
-                      end_time % G_TIME_SPAN_SECOND };
-    ret = g_cond_timed_wait(cond, mutex, &time);
-    return ret;
-}
-#endif
 
 static const char *tmpfs;
 static const char *root;
@@ -171,8 +158,9 @@ static void wait_for_fds(TestServer *s)
     g_mutex_unlock(&s->data_mutex);
 }
 
-static void read_guest_mem(TestServer *s)
+static void read_guest_mem(const void *data)
 {
+    TestServer *s = (void *)data;
     uint32_t *guest_mem;
     int i, j;
     size_t size;
@@ -215,8 +203,7 @@ static void read_guest_mem(TestServer *s)
 
 static void *thread_function(void *data)
 {
-    GMainLoop *loop;
-    loop = g_main_loop_new(NULL, FALSE);
+    GMainLoop *loop = data;
     g_main_loop_run(loop);
     return NULL;
 }
@@ -244,7 +231,12 @@ static void chr_read(void *opaque, const uint8_t *buf, int size)
 
     if (msg.size) {
         p += VHOST_USER_HDR_SIZE;
-        g_assert_cmpint(qemu_chr_fe_read_all(chr, p, msg.size), ==, msg.size);
+        size = qemu_chr_fe_read_all(chr, p, msg.size);
+        if (size != msg.size) {
+            g_test_message("Wrong message size received %d != %d\n",
+                           size, msg.size);
+            return;
+        }
     }
 
     switch (msg.request) {
@@ -279,6 +271,9 @@ static void chr_read(void *opaque, const uint8_t *buf, int size)
         msg.payload.state.num = 0;
         p = (uint8_t *) &msg;
         qemu_chr_fe_write_all(chr, p, VHOST_USER_HDR_SIZE + msg.size);
+
+        assert(msg.payload.state.index < 2);
+        s->rings &= ~(0x1ULL << msg.payload.state.index);
         break;
 
     case VHOST_USER_SET_MEM_TABLE:
@@ -316,10 +311,9 @@ static void chr_read(void *opaque, const uint8_t *buf, int size)
         g_cond_signal(&s->data_cond);
         break;
 
-    case VHOST_USER_SET_VRING_ENABLE:
-        if (!msg.payload.state.num) {
-            s->fds_num = 0;
-        }
+    case VHOST_USER_SET_VRING_BASE:
+        assert(msg.payload.state.index < 2);
+        s->rings |= 0x1ULL << msg.payload.state.index;
         break;
 
     default:
@@ -359,16 +353,10 @@ static const char *init_hugepagefs(const char *path)
 static TestServer *test_server_new(const gchar *name)
 {
     TestServer *server = g_new0(TestServer, 1);
-    gchar *chr_path;
 
     server->socket_path = g_strdup_printf("%s/%s.sock", tmpfs, name);
-
-    chr_path = g_strdup_printf("unix:%s,server,nowait", server->socket_path);
+    server->mig_path = g_strdup_printf("%s/%s.mig", tmpfs, name);
     server->chr_name = g_strdup_printf("chr-%s", name);
-    server->chr = qemu_chr_new(server->chr_name, chr_path, NULL);
-    g_free(chr_path);
-
-    qemu_chr_add_handlers(server->chr, chr_can_read, chr_read, NULL, server);
 
     g_mutex_init(&server->data_mutex);
     g_cond_init(&server->data_cond);
@@ -378,15 +366,36 @@ static TestServer *test_server_new(const gchar *name)
     return server;
 }
 
-#define GET_QEMU_CMD(s)                                                        \
-    g_strdup_printf(QEMU_CMD, 512, 512, (root), (s)->chr_name,                 \
-                    (s)->socket_path, (s)->chr_name)
+static void test_server_create_chr(TestServer *server, const gchar *opt)
+{
+    gchar *chr_path;
 
-#define GET_QEMU_CMDE(s, mem, extra, ...)                                      \
-    g_strdup_printf(QEMU_CMD extra, (mem), (mem), (root), (s)->chr_name,       \
-                    (s)->socket_path, (s)->chr_name, ##__VA_ARGS__)
+    chr_path = g_strdup_printf("unix:%s%s", server->socket_path, opt);
+    server->chr = qemu_chr_new(server->chr_name, chr_path, NULL);
+    g_free(chr_path);
 
-static void test_server_free(TestServer *server)
+    qemu_chr_add_handlers(server->chr, chr_can_read, chr_read, NULL, server);
+}
+
+static void test_server_listen(TestServer *server)
+{
+    test_server_create_chr(server, ",server,nowait");
+}
+
+static inline void test_server_connect(TestServer *server)
+{
+    test_server_create_chr(server, ",reconnect=1");
+}
+
+#define GET_QEMU_CMD(s)                                         \
+    g_strdup_printf(QEMU_CMD, 512, 512, (root), (s)->chr_name,  \
+                    (s)->socket_path, "", (s)->chr_name)
+
+#define GET_QEMU_CMDE(s, mem, chr_opts, extra, ...)                     \
+    g_strdup_printf(QEMU_CMD extra, (mem), (mem), (root), (s)->chr_name, \
+                    (s)->socket_path, (chr_opts), (s)->chr_name, ##__VA_ARGS__)
+
+static gboolean _test_server_free(TestServer *server)
 {
     int i;
 
@@ -403,9 +412,18 @@ static void test_server_free(TestServer *server)
     unlink(server->socket_path);
     g_free(server->socket_path);
 
+    unlink(server->mig_path);
+    g_free(server->mig_path);
 
     g_free(server->chr_name);
     g_free(server);
+
+    return FALSE;
+}
+
+static void test_server_free(TestServer *server)
+{
+    g_idle_add((GSourceFunc)_test_server_free, server);
 }
 
 static void wait_for_log_fd(TestServer *s)
@@ -425,7 +443,7 @@ static void wait_for_log_fd(TestServer *s)
     g_mutex_unlock(&s->data_mutex);
 }
 
-static void write_guest_mem(TestServer *s, uint32 seed)
+static void write_guest_mem(TestServer *s, uint32_t seed)
 {
     uint32_t *guest_mem;
     int i, j;
@@ -486,25 +504,36 @@ static gboolean
 test_migrate_source_check(GSource *source)
 {
     TestMigrateSource *t = (TestMigrateSource *)source;
-    gboolean overlap = t->src->fds_num > 0 && t->dest->fds_num > 0;
+    gboolean overlap = t->src->rings && t->dest->rings;
 
     g_assert(!overlap);
 
     return FALSE;
 }
 
+#if !GLIB_CHECK_VERSION(2,36,0)
+/* this callback is unnecessary with glib >2.36, the default
+ * prepare for the source does the same */
+static gboolean
+test_migrate_source_prepare(GSource *source, gint *timeout)
+{
+    *timeout = -1;
+    return FALSE;
+}
+#endif
+
 GSourceFuncs test_migrate_source_funcs = {
-    NULL,
-    test_migrate_source_check,
-    NULL,
-    NULL
+#if !GLIB_CHECK_VERSION(2,36,0)
+    .prepare = test_migrate_source_prepare,
+#endif
+    .check = test_migrate_source_check,
 };
 
 static void test_migrate(void)
 {
     TestServer *s = test_server_new("src");
     TestServer *dest = test_server_new("dest");
-    const char *uri = "tcp:127.0.0.1:1234";
+    char *uri = g_strdup_printf("%s%s", "unix:", dest->mig_path);
     QTestState *global = global_qtest, *from, *to;
     GSource *source;
     gchar *cmd;
@@ -512,7 +541,10 @@ static void test_migrate(void)
     guint8 *log;
     guint64 size;
 
-    cmd = GET_QEMU_CMDE(s, 2, "");
+    test_server_listen(s);
+    test_server_listen(dest);
+
+    cmd = GET_QEMU_CMDE(s, 2, "", "");
     from = qtest_start(cmd);
     g_free(cmd);
 
@@ -520,7 +552,7 @@ static void test_migrate(void)
     size = get_log_size(s);
     g_assert_cmpint(size, ==, (2 * 1024 * 1024) / (VHOST_LOG_PAGE * 8));
 
-    cmd = GET_QEMU_CMDE(dest, 2, " -incoming %s", uri);
+    cmd = GET_QEMU_CMDE(dest, 2, "", " -incoming %s", uri);
     to = qtest_init(cmd);
     g_free(cmd);
 
@@ -575,9 +607,85 @@ static void test_migrate(void)
     test_server_free(dest);
     qtest_quit(from);
     test_server_free(s);
+    g_free(uri);
 
     global_qtest = global;
 }
+
+#ifdef CONFIG_HAS_GLIB_SUBPROCESS_TESTS
+static void wait_for_rings_started(TestServer *s, size_t count)
+{
+    gint64 end_time;
+
+    g_mutex_lock(&s->data_mutex);
+    end_time = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (ctpop64(s->rings) != count) {
+        if (!g_cond_wait_until(&s->data_cond, &s->data_mutex, end_time)) {
+            /* timeout has passed */
+            g_assert_cmpint(ctpop64(s->rings), ==, count);
+            break;
+        }
+    }
+
+    g_mutex_unlock(&s->data_mutex);
+}
+
+static gboolean
+reconnect_cb(gpointer user_data)
+{
+    TestServer *s = user_data;
+
+    qemu_chr_disconnect(s->chr);
+
+    return FALSE;
+}
+
+static gpointer
+connect_thread(gpointer data)
+{
+    TestServer *s = data;
+
+    /* wait for qemu to start before first try, to avoid extra warnings */
+    g_usleep(G_USEC_PER_SEC);
+    test_server_connect(s);
+
+    return NULL;
+}
+
+static void test_reconnect_subprocess(void)
+{
+    TestServer *s = test_server_new("reconnect");
+    char *cmd;
+
+    g_thread_new("connect", connect_thread, s);
+    cmd = GET_QEMU_CMDE(s, 2, ",server", "");
+    qtest_start(cmd);
+    g_free(cmd);
+
+    wait_for_fds(s);
+    wait_for_rings_started(s, 2);
+
+    /* reconnect */
+    s->fds_num = 0;
+    s->rings = 0;
+    g_idle_add(reconnect_cb, s);
+    wait_for_fds(s);
+    wait_for_rings_started(s, 2);
+
+    qtest_end();
+    test_server_free(s);
+    return;
+}
+
+static void test_reconnect(void)
+{
+    gchar *path = g_strdup_printf("/%s/vhost-user/reconnect/subprocess",
+                                  qtest_get_arch());
+    g_test_trap_subprocess(path, 0, 0);
+    g_test_trap_assert_passed();
+    g_free(path);
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -587,6 +695,8 @@ int main(int argc, char **argv)
     char *qemu_cmd = NULL;
     int ret;
     char template[] = "/tmp/vhost-test-XXXXXX";
+    GMainLoop *loop;
+    GThread *thread;
 
     g_test_init(&argc, &argv, NULL);
 
@@ -608,9 +718,11 @@ int main(int argc, char **argv)
     }
 
     server = test_server_new("test");
+    test_server_listen(server);
 
+    loop = g_main_loop_new(NULL, FALSE);
     /* run the main loop thread so the chardev may operate */
-    g_thread_new(NULL, thread_function, NULL);
+    thread = g_thread_new(NULL, thread_function, loop);
 
     qemu_cmd = GET_QEMU_CMD(server);
 
@@ -619,6 +731,11 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("/vhost-user/read-guest-mem", server, read_guest_mem);
     qtest_add_func("/vhost-user/migrate", test_migrate);
+#ifdef CONFIG_HAS_GLIB_SUBPROCESS_TESTS
+    qtest_add_func("/vhost-user/reconnect/subprocess",
+                   test_reconnect_subprocess);
+    qtest_add_func("/vhost-user/reconnect", test_reconnect);
+#endif
 
     ret = g_test_run();
 
@@ -628,6 +745,14 @@ int main(int argc, char **argv)
 
     /* cleanup */
     test_server_free(server);
+
+    /* finish the helper thread and dispatch pending sources */
+    g_main_loop_quit(loop);
+    g_thread_join(thread);
+    while (g_main_context_pending(NULL)) {
+        g_main_context_iteration (NULL, TRUE);
+    }
+    g_main_loop_unref(loop);
 
     ret = rmdir(tmpfs);
     if (ret != 0) {

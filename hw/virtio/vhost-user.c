@@ -8,6 +8,8 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/virtio/vhost.h"
 #include "hw/virtio/vhost-backend.h"
 #include "hw/virtio/virtio-net.h"
@@ -15,11 +17,8 @@
 #include "sysemu/kvm.h"
 #include "qemu/error-report.h"
 #include "qemu/sockets.h"
-#include "exec/ram_addr.h"
 #include "migration/migration.h"
 
-#include <fcntl.h>
-#include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -177,7 +176,7 @@ static int vhost_user_write(struct vhost_dev *dev, VhostUserMsg *msg,
                             int *fds, int fd_num)
 {
     CharDriverState *chr = dev->opaque;
-    int size = VHOST_USER_HDR_SIZE + msg->size;
+    int ret, size = VHOST_USER_HDR_SIZE + msg->size;
 
     /*
      * For non-vring specific requests, like VHOST_USER_SET_MEM_TABLE,
@@ -188,12 +187,19 @@ static int vhost_user_write(struct vhost_dev *dev, VhostUserMsg *msg,
         return 0;
     }
 
-    if (fd_num) {
-        qemu_chr_fe_set_msgfds(chr, fds, fd_num);
+    if (qemu_chr_fe_set_msgfds(chr, fds, fd_num) < 0) {
+        error_report("Failed to set msg fds.");
+        return -1;
     }
 
-    return qemu_chr_fe_write_all(chr, (const uint8_t *) msg, size) == size ?
-            0 : -1;
+    ret = qemu_chr_fe_write_all(chr, (const uint8_t *) msg, size);
+    if (ret != size) {
+        error_report("Failed to write msg."
+                     " Wrote %d instead of %d.", ret, size);
+        return -1;
+    }
+
+    return 0;
 }
 
 static int vhost_user_set_log_base(struct vhost_dev *dev, uint64_t base,
@@ -215,12 +221,14 @@ static int vhost_user_set_log_base(struct vhost_dev *dev, uint64_t base,
         fds[fd_num++] = log->fd;
     }
 
-    vhost_user_write(dev, &msg, fds, fd_num);
+    if (vhost_user_write(dev, &msg, fds, fd_num) < 0) {
+        return -1;
+    }
 
     if (shmfd) {
         msg.size = 0;
         if (vhost_user_read(dev, &msg) < 0) {
-            return 0;
+            return -1;
         }
 
         if (msg.request != VHOST_USER_SET_LOG_BASE) {
@@ -247,18 +255,18 @@ static int vhost_user_set_mem_table(struct vhost_dev *dev,
 
     for (i = 0; i < dev->mem->nregions; ++i) {
         struct vhost_memory_region *reg = dev->mem->regions + i;
-        ram_addr_t ram_addr;
+        ram_addr_t offset;
+        MemoryRegion *mr;
 
         assert((uintptr_t)reg->userspace_addr == reg->userspace_addr);
-        qemu_ram_addr_from_host((void *)(uintptr_t)reg->userspace_addr,
-                                &ram_addr);
-        fd = qemu_get_ram_fd(ram_addr);
+        mr = memory_region_from_host((void *)(uintptr_t)reg->userspace_addr,
+                                     &offset);
+        fd = memory_region_get_fd(mr);
         if (fd > 0) {
             msg.payload.memory.regions[fd_num].userspace_addr = reg->userspace_addr;
             msg.payload.memory.regions[fd_num].memory_size  = reg->memory_size;
             msg.payload.memory.regions[fd_num].guest_phys_addr = reg->guest_phys_addr;
-            msg.payload.memory.regions[fd_num].mmap_offset = reg->userspace_addr -
-                (uintptr_t) qemu_get_ram_block_host_ptr(ram_addr);
+            msg.payload.memory.regions[fd_num].mmap_offset = offset;
             assert(fd_num < VHOST_MEMORY_MAX_NREGIONS);
             fds[fd_num++] = fd;
         }
@@ -276,7 +284,9 @@ static int vhost_user_set_mem_table(struct vhost_dev *dev,
     msg.size += sizeof(msg.payload.memory.padding);
     msg.size += fd_num * sizeof(VhostUserMemoryRegion);
 
-    vhost_user_write(dev, &msg, fds, fd_num);
+    if (vhost_user_write(dev, &msg, fds, fd_num) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -291,7 +301,9 @@ static int vhost_user_set_vring_addr(struct vhost_dev *dev,
         .size = sizeof(msg.payload.addr),
     };
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -314,7 +326,9 @@ static int vhost_set_vring(struct vhost_dev *dev,
         .size = sizeof(msg.payload.state),
     };
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -361,10 +375,12 @@ static int vhost_user_get_vring_base(struct vhost_dev *dev,
         .size = sizeof(msg.payload.state),
     };
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     if (vhost_user_read(dev, &msg) < 0) {
-        return 0;
+        return -1;
     }
 
     if (msg.request != VHOST_USER_GET_VRING_BASE) {
@@ -402,7 +418,9 @@ static int vhost_set_vring_file(struct vhost_dev *dev,
         msg.payload.u64 |= VHOST_USER_VRING_NOFD_MASK;
     }
 
-    vhost_user_write(dev, &msg, fds, fd_num);
+    if (vhost_user_write(dev, &msg, fds, fd_num) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -428,7 +446,9 @@ static int vhost_user_set_u64(struct vhost_dev *dev, int request, uint64_t u64)
         .size = sizeof(msg.payload.u64),
     };
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -456,10 +476,12 @@ static int vhost_user_get_u64(struct vhost_dev *dev, int request, uint64_t *u64)
         return 0;
     }
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     if (vhost_user_read(dev, &msg) < 0) {
-        return 0;
+        return -1;
     }
 
     if (msg.request != request) {
@@ -490,7 +512,9 @@ static int vhost_user_set_owner(struct vhost_dev *dev)
         .flags = VHOST_USER_VERSION,
     };
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -502,7 +526,9 @@ static int vhost_user_reset_device(struct vhost_dev *dev)
         .flags = VHOST_USER_VERSION,
     };
 
-    vhost_user_write(dev, &msg, NULL, 0);
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -589,7 +615,6 @@ static bool vhost_user_requires_shm_log(struct vhost_dev *dev)
 static int vhost_user_migration_done(struct vhost_dev *dev, char* mac_addr)
 {
     VhostUserMsg msg = { 0 };
-    int err;
 
     assert(dev->vhost_ops->backend_type == VHOST_BACKEND_TYPE_USER);
 
@@ -606,10 +631,26 @@ static int vhost_user_migration_done(struct vhost_dev *dev, char* mac_addr)
         memcpy((char *)&msg.payload.u64, mac_addr, 6);
         msg.size = sizeof(msg.payload.u64);
 
-        err = vhost_user_write(dev, &msg, NULL, 0);
-        return err;
+        return vhost_user_write(dev, &msg, NULL, 0);
     }
     return -1;
+}
+
+static bool vhost_user_can_merge(struct vhost_dev *dev,
+                                 uint64_t start1, uint64_t size1,
+                                 uint64_t start2, uint64_t size2)
+{
+    ram_addr_t offset;
+    int mfd, rfd;
+    MemoryRegion *mr;
+
+    mr = memory_region_from_host((void *)(uintptr_t)start1, &offset);
+    mfd = memory_region_get_fd(mr);
+
+    mr = memory_region_from_host((void *)(uintptr_t)start2, &offset);
+    rfd = memory_region_get_fd(mr);
+
+    return mfd == rfd;
 }
 
 const VhostOps user_ops = {
@@ -634,4 +675,5 @@ const VhostOps user_ops = {
         .vhost_set_vring_enable = vhost_user_set_vring_enable,
         .vhost_requires_shm_log = vhost_user_requires_shm_log,
         .vhost_migration_done = vhost_user_migration_done,
+        .vhost_backend_can_merge = vhost_user_can_merge,
 };

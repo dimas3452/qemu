@@ -22,14 +22,13 @@
  * THE SOFTWARE.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
+#include "qemu/osdep.h"
 
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
 #include "block/block_int.h"
+#include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/sockets.h"
 #include "qemu/uri.h"
@@ -778,7 +777,7 @@ static void restart_coroutine(void *opaque)
 
     DPRINTF("co=%p", co);
 
-    qemu_coroutine_enter(co, NULL);
+    qemu_coroutine_enter(co);
 }
 
 static coroutine_fn void set_fd_handler(BDRVSSHState *s, BlockDriverState *bs)

@@ -1,7 +1,9 @@
-#ifndef QEMU_MMAP_ALLOC
-#define QEMU_MMAP_ALLOC
+#ifndef QEMU_MMAP_ALLOC_H
+#define QEMU_MMAP_ALLOC_H
 
 #include "qemu-common.h"
+
+size_t qemu_fd_getpagesize(int fd);
 
 void *qemu_ram_mmap(int fd, size_t size, size_t align, bool shared);
 

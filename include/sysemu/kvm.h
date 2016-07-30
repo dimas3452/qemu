@@ -14,8 +14,6 @@
 #ifndef QEMU_KVM_H
 #define QEMU_KVM_H
 
-#include <errno.h>
-#include "config-host.h"
 #include "qemu/queue.h"
 #include "qom/cpu.h"
 #include "exec/memattrs.h"
@@ -43,6 +41,7 @@
 
 extern bool kvm_allowed;
 extern bool kvm_kernel_irqchip;
+extern bool kvm_split_irqchip;
 extern bool kvm_async_interrupts_allowed;
 extern bool kvm_halt_in_kernel_allowed;
 extern bool kvm_eventfds_allowed;
@@ -69,6 +68,16 @@ extern bool kvm_ioeventfd_any_length_allowed;
  * following functions or some other specific check instead.
  */
 #define kvm_irqchip_in_kernel() (kvm_kernel_irqchip)
+
+/**
+ * kvm_irqchip_is_split:
+ *
+ * Returns: true if the user asked us to split the irqchip
+ * implementation between user and kernel space. The details are
+ * architecture and machine specific. On PC, it means that the PIC,
+ * IOAPIC, and PIT are in user space while the LAPIC is in the kernel.
+ */
+#define kvm_irqchip_is_split() (kvm_split_irqchip)
 
 /**
  * kvm_async_interrupts_enabled:
@@ -163,6 +172,7 @@ extern bool kvm_ioeventfd_any_length_allowed;
 #else
 #define kvm_enabled()           (0)
 #define kvm_irqchip_in_kernel() (false)
+#define kvm_irqchip_is_split() (false)
 #define kvm_async_interrupts_enabled() (false)
 #define kvm_halt_in_kernel() (false)
 #define kvm_eventfds_enabled() (false)
@@ -206,8 +216,10 @@ int kvm_has_intx_set_mask(void);
 
 int kvm_init_vcpu(CPUState *cpu);
 int kvm_cpu_exec(CPUState *cpu);
+int kvm_destroy_vcpu(CPUState *cpu);
 
 #ifdef NEED_CPU_H
+#include "cpu.h"
 
 void kvm_setup_guest_memory(void *start, size_t size);
 void kvm_flush_coalesced_mmio_buffer(void);
@@ -296,6 +308,15 @@ void kvm_device_access(int fd, int group, uint64_t attr,
  */
 int kvm_create_device(KVMState *s, uint64_t type, bool test);
 
+/**
+ * kvm_device_supported - probe whether KVM supports specific device
+ *
+ * @vmfd: The fd handler for VM
+ * @type: type of device
+ *
+ * @return: true if supported, otherwise false.
+ */
+bool kvm_device_supported(int vmfd, uint64_t type);
 
 /* Arch specific hooks */
 
@@ -305,6 +326,8 @@ void kvm_arch_pre_run(CPUState *cpu, struct kvm_run *run);
 MemTxAttrs kvm_arch_post_run(CPUState *cpu, struct kvm_run *run);
 
 int kvm_arch_handle_exit(CPUState *cpu, struct kvm_run *run);
+
+int kvm_arch_handle_ioapic_eoi(CPUState *cpu, struct kvm_run *run);
 
 int kvm_arch_process_async_events(CPUState *cpu);
 
@@ -323,6 +346,8 @@ int kvm_arch_init(MachineState *ms, KVMState *s);
 
 int kvm_arch_init_vcpu(CPUState *cpu);
 
+bool kvm_vcpu_id_is_valid(int vcpu_id);
+
 /* Returns VCPU ID to be used on KVM_CREATE_VCPU ioctl() */
 unsigned long kvm_arch_vcpu_id(CPUState *cpu);
 
@@ -334,13 +359,18 @@ void kvm_arch_init_irq_routing(KVMState *s);
 int kvm_arch_fixup_msi_route(struct kvm_irq_routing_entry *route,
                              uint64_t address, uint32_t data, PCIDevice *dev);
 
+/* Notify arch about newly added MSI routes */
+int kvm_arch_add_msi_route_post(struct kvm_irq_routing_entry *route,
+                                int vector, PCIDevice *dev);
+/* Notify arch about released MSI routes */
+int kvm_arch_release_virq_post(int virq);
+
 int kvm_arch_msi_data_to_gsi(uint32_t data);
 
 int kvm_set_irq(KVMState *s, int irq, int level);
 int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg);
 
 void kvm_irqchip_add_irq_route(KVMState *s, int gsi, int irqchip, int pin);
-void kvm_irqchip_commit_routes(KVMState *s);
 
 void kvm_put_apic_state(DeviceState *d, struct kvm_lapic_state *kapic);
 void kvm_get_apic_state(DeviceState *d, struct kvm_lapic_state *kapic);
@@ -449,12 +479,25 @@ static inline void cpu_synchronize_post_init(CPUState *cpu)
     }
 }
 
-int kvm_irqchip_add_msi_route(KVMState *s, MSIMessage msg, PCIDevice *dev);
+/**
+ * kvm_irqchip_add_msi_route - Add MSI route for specific vector
+ * @s:      KVM state
+ * @vector: which vector to add. This can be either MSI/MSIX
+ *          vector. The function will automatically detect whether
+ *          MSI/MSIX is enabled, and fetch corresponding MSI
+ *          message.
+ * @dev:    Owner PCI device to add the route. If @dev is specified
+ *          as @NULL, an empty MSI message will be inited.
+ * @return: virq (>=0) when success, errno (<0) when failed.
+ */
+int kvm_irqchip_add_msi_route(KVMState *s, int vector, PCIDevice *dev);
 int kvm_irqchip_update_msi_route(KVMState *s, int virq, MSIMessage msg,
                                  PCIDevice *dev);
+void kvm_irqchip_commit_routes(KVMState *s);
 void kvm_irqchip_release_virq(KVMState *s, int virq);
 
 int kvm_irqchip_add_adapter_route(KVMState *s, AdapterInfo *adapter);
+int kvm_irqchip_add_hv_sint_route(KVMState *s, uint32_t vcpu, uint32_t sint);
 
 int kvm_irqchip_add_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
                                        EventNotifier *rn, int virq);
@@ -472,6 +515,7 @@ void kvm_init_irq_routing(KVMState *s);
 /**
  * kvm_arch_irqchip_create:
  * @KVMState: The KVMState pointer
+ * @MachineState: The MachineState pointer
  *
  * Allow architectures to create an in-kernel irq chip themselves.
  *
@@ -479,7 +523,7 @@ void kvm_init_irq_routing(KVMState *s);
  *            0: irq chip was not created
  *          > 0: irq chip was created
  */
-int kvm_arch_irqchip_create(KVMState *s);
+int kvm_arch_irqchip_create(MachineState *ms, KVMState *s);
 
 /**
  * kvm_set_one_reg - set a register value in KVM via KVM_SET_ONE_REG ioctl
@@ -500,4 +544,5 @@ int kvm_set_one_reg(CPUState *cs, uint64_t id, void *source);
  * Returns: 0 on success, or a negative errno on failure.
  */
 int kvm_get_one_reg(CPUState *cs, uint64_t id, void *target);
+int kvm_get_max_memslots(void);
 #endif

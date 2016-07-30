@@ -22,8 +22,8 @@
 /* Start of qemu specific additions.  Mostly this is stub definitions
    for things we don't care about.  */
 
+#include "qemu/osdep.h"
 #include "disas/bfd.h"
-#define ATTRIBUTE_UNUSED __attribute__((unused))
 #define ISSPACE(x) ((x) == ' ' || (x) == '\t' || (x) == '\n')
 
 #define ARM_EXT_V1	 0
@@ -1816,7 +1816,7 @@ print_insn_coprocessor (bfd_vma pc, struct disassemble_info *info, long given,
 			  func (stream, "e");
 			  break;
 			default:
-			  func (stream, _("<illegal precision>"));
+			  func (stream, "<illegal precision>");
 			  break;
 			}
 		      break;

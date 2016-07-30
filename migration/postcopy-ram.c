@@ -16,9 +16,7 @@
  * source to the destination before all the data has been copied.
  */
 
-#include <glib.h>
-#include <stdio.h>
-#include <unistd.h>
+#include "qemu/osdep.h"
 
 #include "qemu-common.h"
 #include "migration/migration.h"
@@ -53,15 +51,13 @@ struct PostcopyDiscardState {
 #if defined(__linux__)
 
 #include <poll.h>
-#include <sys/eventfd.h>
-#include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
 #include <asm/types.h> /* for __u64 */
 #endif
 
-#if defined(__linux__) && defined(__NR_userfaultfd)
+#if defined(__linux__) && defined(__NR_userfaultfd) && defined(CONFIG_EVENTFD)
+#include <sys/eventfd.h>
 #include <linux/userfaultfd.h>
 
 static bool ufd_version_check(int ufd)
@@ -241,10 +237,7 @@ static int cleanup_range(const char *block_name, void *host_addr,
      * We turned off hugepage for the precopy stage with postcopy enabled
      * we can turn it back on now.
      */
-    if (qemu_madvise(host_addr, length, QEMU_MADV_HUGEPAGE)) {
-        error_report("%s HUGEPAGE: %s", __func__, strerror(errno));
-        return -1;
-    }
+    qemu_madvise(host_addr, length, QEMU_MADV_HUGEPAGE);
 
     /*
      * We can also turn off userfault now since we should have all the
@@ -345,10 +338,7 @@ static int nhp_range(const char *block_name, void *host_addr,
      * do delete areas of the page, even if THP thinks a hugepage would
      * be a good idea, so force hugepages off.
      */
-    if (qemu_madvise(host_addr, length, QEMU_MADV_NOHUGEPAGE)) {
-        error_report("%s: NOHUGEPAGE: %s", __func__, strerror(errno));
-        return -1;
-    }
+    qemu_madvise(host_addr, length, QEMU_MADV_NOHUGEPAGE);
 
     return 0;
 }
@@ -415,7 +405,6 @@ static void *postcopy_ram_fault_thread(void *opaque)
 
     while (true) {
         ram_addr_t rb_offset;
-        ram_addr_t in_raspace;
         struct pollfd pfd[2];
 
         /*
@@ -467,7 +456,7 @@ static void *postcopy_ram_fault_thread(void *opaque)
 
         rb = qemu_ram_block_from_host(
                  (void *)(uintptr_t)msg.arg.pagefault.address,
-                 true, &in_raspace, &rb_offset);
+                 true, &rb_offset);
         if (!rb) {
             error_report("postcopy_ram_fault_thread: Fault outside guest: %"
                          PRIx64, (uint64_t)msg.arg.pagefault.address);
@@ -733,7 +722,8 @@ void postcopy_discard_send_range(MigrationState *ms, PostcopyDiscardState *pds,
 
     if (pds->cur_entry == MAX_DISCARDS_PER_COMMAND) {
         /* Full set, ship it! */
-        qemu_savevm_send_postcopy_ram_discard(ms->file, pds->ramblock_name,
+        qemu_savevm_send_postcopy_ram_discard(ms->to_dst_file,
+                                              pds->ramblock_name,
                                               pds->cur_entry,
                                               pds->start_list,
                                               pds->length_list);
@@ -753,7 +743,8 @@ void postcopy_discard_send_finish(MigrationState *ms, PostcopyDiscardState *pds)
 {
     /* Anything unsent? */
     if (pds->cur_entry) {
-        qemu_savevm_send_postcopy_ram_discard(ms->file, pds->ramblock_name,
+        qemu_savevm_send_postcopy_ram_discard(ms->to_dst_file,
+                                              pds->ramblock_name,
                                               pds->cur_entry,
                                               pds->start_list,
                                               pds->length_list);

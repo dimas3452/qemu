@@ -23,15 +23,9 @@
  */
 
 /* Needed for CONFIG_MADVISE */
-#include "config-host.h"
-
-#if defined(CONFIG_MADVISE) || defined(CONFIG_POSIX_MADVISE)
-#include <sys/mman.h>
-#endif
-
+#include "qemu/osdep.h"
 #include "block/block_int.h"
 #include "qemu-common.h"
-#include "qemu/osdep.h"
 #include "qcow2.h"
 #include "trace.h"
 
@@ -216,7 +210,7 @@ static int qcow2_cache_entry_flush(BlockDriverState *bs, Qcow2Cache *c, int i)
         BLKDBG_EVENT(bs->file, BLKDBG_L2_UPDATE);
     }
 
-    ret = bdrv_pwrite(bs->file->bs, c->entries[i].offset,
+    ret = bdrv_pwrite(bs->file, c->entries[i].offset,
                       qcow2_cache_get_table_addr(bs, c, i), s->cluster_size);
     if (ret < 0) {
         return ret;
@@ -227,7 +221,7 @@ static int qcow2_cache_entry_flush(BlockDriverState *bs, Qcow2Cache *c, int i)
     return 0;
 }
 
-int qcow2_cache_flush(BlockDriverState *bs, Qcow2Cache *c)
+int qcow2_cache_write(BlockDriverState *bs, Qcow2Cache *c)
 {
     BDRVQcow2State *s = bs->opaque;
     int result = 0;
@@ -243,8 +237,15 @@ int qcow2_cache_flush(BlockDriverState *bs, Qcow2Cache *c)
         }
     }
 
+    return result;
+}
+
+int qcow2_cache_flush(BlockDriverState *bs, Qcow2Cache *c)
+{
+    int result = qcow2_cache_write(bs, c);
+
     if (result == 0) {
-        ret = bdrv_flush(bs->file->bs);
+        int ret = bdrv_flush(bs->file->bs);
         if (ret < 0) {
             result = ret;
         }
@@ -356,7 +357,7 @@ static int qcow2_cache_do_get(BlockDriverState *bs, Qcow2Cache *c,
             BLKDBG_EVENT(bs->file, BLKDBG_L2_LOAD);
         }
 
-        ret = bdrv_pread(bs->file->bs, offset,
+        ret = bdrv_pread(bs->file, offset,
                          qcow2_cache_get_table_addr(bs, c, i),
                          s->cluster_size);
         if (ret < 0) {

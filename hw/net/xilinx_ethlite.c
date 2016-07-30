@@ -22,6 +22,9 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "cpu.h" /* FIXME should not use tswap* */
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "net/net.h"
@@ -214,7 +217,7 @@ static void xilinx_ethlite_reset(DeviceState *dev)
 }
 
 static NetClientInfo net_xilinx_ethlite_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .can_receive = eth_can_rx,
     .receive = eth_rx,

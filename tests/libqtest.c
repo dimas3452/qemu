@@ -14,28 +14,19 @@
  * See the COPYING file in the top-level directory.
  *
  */
+#include "qemu/osdep.h"
 #include "libqtest.h"
 
-#include <glib.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/un.h>
-#include <inttypes.h>
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
 
-#include "qemu/compiler.h"
-#include "qemu/osdep.h"
 #include "qapi/qmp/json-parser.h"
 #include "qapi/qmp/json-streamer.h"
 #include "qapi/qmp/qjson.h"
 
 #define MAX_IRQ 256
-#define SOCKET_TIMEOUT 5
+#define SOCKET_TIMEOUT 50
 
 QTestState *global_qtest;
 
@@ -110,6 +101,11 @@ static void kill_qemu(QTestState *s)
     }
 }
 
+static void kill_qemu_hook_func(void *s)
+{
+    kill_qemu(s);
+}
+
 static void sigabrt_handler(int signo)
 {
     g_hook_list_invoke(&abrt_hooks, FALSE);
@@ -133,7 +129,7 @@ static void cleanup_sigabrt_handler(void)
     sigaction(SIGABRT, &sigact_old, NULL);
 }
 
-void qtest_add_abrt_handler(void (*fn), const void *data)
+void qtest_add_abrt_handler(GHookFunc fn, const void *data)
 {
     GHook *hook;
 
@@ -170,7 +166,7 @@ QTestState *qtest_init(const char *extra_args)
     sock = init_socket(socket_path);
     qmpsock = init_socket(qmp_socket_path);
 
-    qtest_add_abrt_handler(kill_qemu, s);
+    qtest_add_abrt_handler(kill_qemu_hook_func, s);
 
     s->qemu_pid = fork();
     if (s->qemu_pid == 0) {
@@ -351,7 +347,7 @@ typedef struct {
     QDict *response;
 } QMPResponseParser;
 
-static void qmp_response(JSONMessageParser *parser, QList *tokens)
+static void qmp_response(JSONMessageParser *parser, GQueue *tokens)
 {
     QMPResponseParser *qmp = container_of(parser, QMPResponseParser, parser);
     QObject *obj;
@@ -755,14 +751,15 @@ void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size)
     g_strfreev(args);
 }
 
-void qtest_add_func(const char *str, void (*fn))
+void qtest_add_func(const char *str, void (*fn)(void))
 {
     gchar *path = g_strdup_printf("/%s/%s", qtest_get_arch(), str);
     g_test_add_func(path, fn);
     g_free(path);
 }
 
-void qtest_add_data_func(const char *str, const void *data, void (*fn))
+void qtest_add_data_func(const char *str, const void *data,
+                         void (*fn)(const void *))
 {
     gchar *path = g_strdup_printf("/%s/%s", qtest_get_arch(), str);
     g_test_add_data_func(path, data, fn);
