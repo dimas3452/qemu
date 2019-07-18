@@ -39,9 +39,9 @@ static void msp430_cpu_reset(CPUState *s)
     
     msp430_class->parent_reset(s);
     memset(state, 0, sizeof(MSP430CpuState));
-    
-    uint8_t *rom = rom_ptr(0xFFFE);
-    uint32_t resetAddr = (0xFFFE & ldl_p(rom));
+
+    uint32_t resetAddr;
+    resetAddr = cpu_lduw_data(state, 0xFFFE);
     state->regs[MSP430_PC_REGISTER] = resetAddr;
     tlb_flush(s, 1);
 }
