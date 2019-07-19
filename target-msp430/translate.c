@@ -1223,10 +1223,13 @@ static void msp430_decode_opcode(MSP430CpuState *env, DisasmContext *ctx)
 static void msp430_generate_tcg_code(MSP430CpuState *env, TranslationBlock *tb, bool isSearchPc)
 {
     DisasmContext ctx;
-    //CPUState *cs = CPU(msp430_env_get_cpu(env));
+    CPUState *cs = CPU(msp430_env_get_cpu(env));
     int32_t instrCount = 0;
     target_ulong pc_start, pc_idx;
     target_ulong blockSize = 0;
+    CPUBreakpoint *bp;
+
+    ctx.state = STATE_TRANSLATE;
 
     /* Initialize the start of the translation block translation by setting the pc_idx
      * pointer to where PC start is located. PC start is found within the TranslationBlock's
@@ -1245,23 +1248,46 @@ static void msp430_generate_tcg_code(MSP430CpuState *env, TranslationBlock *tb, 
         memset(&ctx, 0, sizeof(DisasmContext));
         ctx.tb = tb;
         ctx.pc = pc_idx;
-        ctx.singlestep_enabled = 1;
         
+        tcg_gen_insn_start(ctx.pc);
+        instrCount++;
+
         /* Decode the instruction at the current PC location. */
         tcg_gen_movi_i32(TCGV_REG(MSP430_PC_REGISTER), ctx.pc);
-        if (ctx.singlestep_enabled)
-            msp430_raise_excp(MSP430_EXCP_DEBUG);
+        if (unlikely(!QTAILQ_EMPTY(&cs->breakpoints))) {
+            QTAILQ_FOREACH(bp, &cs->breakpoints, entry) {
+                if (pc_idx == bp->pc) {
+                    tcg_gen_movi_i32(TCGV_CPU_PC, pc_idx);
+                    gen_helper_debug(cpu_env);
+                    ctx.state = STATE_END;
+                    goto done_generating;
+                }
+            }
+        }
         msp430_decode_opcode(env, &ctx);
         blockSize += (ctx.instr_len << 1);
         pc_idx += (ctx.instr_len << 1);
-        instrCount++;
-
-        /* Close the TranslationBlock so it can used by QEMU to execute and store for 
-         * possible caching */
-        //msp430_exit_tb(tb, tb_pc_start + blockSize);
-        
-    } while (ctx.state == STATE_TRANSLATE);
-    
+        if (cs->singlestep_enabled) {
+            break;
+        }
+    } while (!tcg_op_buf_full() && ctx.state == STATE_TRANSLATE);
+    if (cs->singlestep_enabled) {
+        if (ctx.state == STATE_TRANSLATE) {
+            tcg_gen_movi_i32(TCGV_CPU_PC, pc_idx);
+        }
+        gen_helper_debug(cpu_env);
+    } else {
+        switch (ctx.state) {
+            case STATE_TRANSLATE:
+                tcg_gen_movi_i32(TCGV_CPU_PC, pc_idx);
+                break;
+            case STATE_END:
+            default:
+                break;
+        }
+        tcg_gen_exit_tb(0);
+    }
+done_generating:
     /* At this point, the translation engine has finished creating TCG instructions.
      * this will signal to QEMU TCG engine to close buffers and whatever else it needs
      * to do. */
