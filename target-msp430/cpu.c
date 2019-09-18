@@ -7,6 +7,7 @@
 #include "exec/log.h"
 #include "qapi/error.h"
 #include "hw/loader.h"
+#include "exec/gdbstub.h"
 
 #define MSP430_NUM_CPUS              (sizeof(MspCpus)/sizeof(MSP430CpuInfo))
 
@@ -15,6 +16,31 @@ typedef struct {
     void (*initfn)(Object *obj);
     void (*class_init)(ObjectClass *klass, void *data);
 } MSP430CpuInfo;
+
+static int msp430_cpu_gdb_read_register(CPUState* cs, uint8_t* mem_buf, int n)
+{
+    MSP430Cpu *cpu = MSP430_CPU(cs);
+    CPUClass *cc = CPU_GET_CLASS(cs);
+    MSP430CpuState *state __attribute__((unused)) = &cpu->state;
+    if (n > cc->gdb_num_core_regs) {
+        return 0;
+    } else {
+        return gdb_get_reg16(mem_buf, state->regs[n]);
+    }
+}
+
+static int msp430_cpu_gdb_write_register(CPUState* cs, uint8_t* mem_buf, int n)
+{
+    MSP430Cpu *cpu = MSP430_CPU(cs);
+    CPUClass *cc = CPU_GET_CLASS(cs);
+    MSP430CpuState *state __attribute__((unused)) = &cpu->state;
+    if (n > cc->gdb_num_core_regs) {
+        return 0;
+    } else {
+        state->regs[n] = lduw_p(mem_buf);
+    }
+    return 2;
+}
 
 /********************************************************************************
  * Prototype Functions (Private)
@@ -157,6 +183,9 @@ static void msp430_cpu_class_init(ObjectClass *oc, void *data)
     cpu_class->set_pc = msp430_set_pc;
     cpu_class->dump_state = msp430_cpu_dump_state;
     cpu_class->debug_excp_handler = msp430_cpu_debug_excp_handler;
+    cpu_class->gdb_num_core_regs = MSP430_NUM_REGISTERS;
+    cpu_class->gdb_read_register = msp430_cpu_gdb_read_register;
+    cpu_class->gdb_write_register = msp430_cpu_gdb_write_register;
     return;
 }
 
