@@ -47,6 +47,7 @@ static void msp430f5x_init(MachineState *args)
     memory_region_init_ram(sram, NULL, "msp430.ram", MSP430_RAM_SIZE, NULL);
     vmstate_register_ram_global(sram);
     memory_region_add_subregion(toplevel, 0x400, sram);
+    // memory_region_add_subregion_overlap(toplevel, 0x400, sram, 1);
 
     // Attempt to boot the MSP430 with the kernel file. This will allow
     // use to boot the firmware.
