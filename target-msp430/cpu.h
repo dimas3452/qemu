@@ -230,6 +230,7 @@ void msp430_cpu_dump_state(CPUState *cs,
                           fprintf_function cpu_fprintf,
                           int flags);
 
+hwaddr msp430_cpu_get_phys_page_debug(CPUState* cs, vaddr addr);
 //////////////////////////////////////////////////////////////////////////////////////////////
 
 

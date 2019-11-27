@@ -237,3 +237,7 @@ int32_t helper_bcd_add(MSP430CpuState *env, int op1, int op2)
 }
 
 
+hwaddr msp430_cpu_get_phys_page_debug(CPUState* cs, vaddr addr)
+{
+    return addr;
+}

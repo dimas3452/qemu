@@ -186,6 +186,7 @@ static void msp430_cpu_class_init(ObjectClass *oc, void *data)
     cpu_class->gdb_num_core_regs = MSP430_NUM_REGISTERS;
     cpu_class->gdb_read_register = msp430_cpu_gdb_read_register;
     cpu_class->gdb_write_register = msp430_cpu_gdb_write_register;
+    cpu_class->get_phys_page_debug = msp430_cpu_get_phys_page_debug;
     return;
 }
 
